@@ -12,6 +12,6 @@ _tools/run_log.txt
 # 原始大图（各 3MB 级，已压成 0.68MB 进了 composeResources）
 _assets_raw/
 
-# 安装包走 GitHub Release，不进版本库
-*.apk
+# 引擎中间产物与临时压缩包（正式的安装包单独用 -f 提交，见 README）
+androidApp/build/outputs/
 *.zip

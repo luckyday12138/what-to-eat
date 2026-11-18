@@ -51,7 +51,12 @@ Android + Windows 桌面同一套代码（Kotlin Multiplatform + Compose Multipl
 
 ## 安装包
 
-在 [Releases](../../releases) 里下载最新的 `今天吃什么-debug.apk`。
+两条路都通：
+
+- 仓库根目录的 `chisha-1.0.0.apk`（已入库，跟着提交一起更新）
+- [Releases](../../releases) 里的同名附件
+
+两者的 sha256 应当一致（`962d5c13…`）。机器上装了旧版的话，直接 `adb install -r chisha-1.0.0.apk` 覆盖即可。
 
 ## 数据
 
