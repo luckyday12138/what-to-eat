@@ -1,6 +1,7 @@
 package com.chisha.data
 
 import com.chisha.core.PlatformStore
+import com.chisha.core.chLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -411,12 +412,17 @@ object SourceHub {
             }
 
             tried++
+            val t0 = kotlin.time.TimeSource.Monotonic.markNow()
             val raw = try {
                 p.fetch(keyword)
             } catch (e: Exception) {
                 null
             }
             val usable = raw?.filter { it.steps.size >= 2 && it.ingredients.size >= 2 }.orEmpty()
+            chLog(
+                "  ${p.label} kw=$keyword 拿=${raw?.size ?: 0} 用=${usable.size} " +
+                    "耗时=${t0.elapsedNow().inWholeMilliseconds}ms"
+            )
 
             if (usable.isNotEmpty()) {
                 health[p.id] = SourceHealth(fails = 0, coolUntil = 0, okCount = h.okCount + 1)

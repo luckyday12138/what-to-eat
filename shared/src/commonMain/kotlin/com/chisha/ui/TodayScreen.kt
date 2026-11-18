@@ -67,6 +67,7 @@ import com.chisha.ui.components.FoodWheel
 import com.chisha.ui.components.ModeSwitch
 import com.chisha.ui.components.PillButton
 import com.chisha.ui.theme.LocalPalette
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
@@ -87,6 +88,10 @@ fun TodayScreen(
 
     var smart by remember { mutableStateOf(repo.prefs.mode != "PURE") }
     var wheel by remember { mutableStateOf<List<Dish>>(emptyList()) }
+    // 联网补菜进行中：先在盘上亮本地菜，网络上来了再换（手机弱网下不能让人对着空盘等）
+    var netting by remember { mutableStateOf(false) }
+    // 用户动过手（转过/选过），就别再自作主张把盘面换掉
+    var touched by remember { mutableStateOf(false) }
     // 调试时可以直接带着「已抽中的结果」进页面，省得每次都要手动转一下
     var result by remember { mutableStateOf<Dish?>(initialResult) }
     var spinning by remember { mutableStateOf(false) }
@@ -105,23 +110,53 @@ fun TodayScreen(
         return Picker.variety(Picker.sample(pool, w, 18), 6)
     }
 
+    // 进首页先在后台把网络池热起来（不占首屏时间，也不影响当前模式）
+    LaunchedEffect(Unit) {
+        OnlineSource.prefetch(slot)
+    }
+
     // 只跟餐段和模式走。不跟 dishes.size：收一道菜回首页，轮盘不该整盘换掉（还会白耗池子里的菜）
     LaunchedEffect(slot, smart) {
         spinning = false
         angle.snapTo(0f)
-        wheel = if (smart) {
-            // 推荐模式：从网络取，和「在线灵感」共用一个池，同一道不会两边都出现
-            val nets = OnlineSource.batch(8, slot)
-            if (nets.isNotEmpty()) Picker.variety(nets.map { it.toDish(slot) }, 6) else localWheel()
-        } else {
-            localWheel()
+        touched = false
+        if (!smart) {
+            netting = false
+            wheel = localWheel()
+            return@LaunchedEffect
         }
+        // 推荐模式：池里如果已经有现成的网络菜，直接摆上去（0 等待）；
+        // 池子还是空的才先亮本地盘，同时后台继续拉。
+        val ready = OnlineSource.spot(slot, 10).map { it.toDish(slot) }.distinctBy { it.id }
+        wheel = if (ready.size >= 4) Picker.variety(ready, 6) else localWheel()
+        netting = true
+        // 首次装、池子空时多试几轮：每轮只等很短，没拿到就歇一下再来，别让用户盯着一个本地盘
+        repeat(4) { round ->
+            val nets = OnlineSource.batch(8, slot)
+            if (nets.isNotEmpty()) {
+                val netDishes = nets.map { it.toDish(slot) }.distinctBy { it.id }
+                // 网络菜太少时掺几道本地菜把盘子撑起来 —— 转盘只剩一两道扇区，比加载慢还难受
+                val next = if (netDishes.size >= 4) {
+                    Picker.variety(netDishes, 6)
+                } else {
+                    Picker.variety((netDishes + localWheel()).distinctBy { it.id }, 6)
+                }
+                if (!touched) wheel = next
+                if (netDishes.size >= 4) {
+                    netting = false
+                    return@LaunchedEffect
+                }
+            }
+            if (round < 3) delay(450)
+        }
+        netting = false
     }
 
     fun spin(excludeName: String? = null) {
         if (spinning) return
         val current = wheel
         if (current.isEmpty()) return
+        touched = true
         spinning = true
         result = null
         val n = current.size
@@ -246,10 +281,12 @@ fun TodayScreen(
                         result = null
                         if (wheel.size < 3) {
                             scope.launch {
-                                wheel = if (smart) {
+                                // 先把本地盘补满（立刻），网络菜到了再换 —— 别让用户盯着半个盘子
+                                wheel = localWheel()
+                                if (smart) {
                                     val nets = OnlineSource.batch(8, slot)
-                                    if (nets.isNotEmpty()) Picker.variety(nets.map { it.toDish(slot) }, 6) else localWheel()
-                                } else localWheel()
+                                    if (nets.isNotEmpty()) wheel = Picker.variety(nets.map { it.toDish(slot) }, 6)
+                                }
                             }
                         }
                     },
@@ -332,6 +369,18 @@ fun TodayScreen(
                                 repo.updatePrefs { prefs -> prefs.copy(mode = if (on) "SMART" else "PURE") }
                             },
                         )
+                    }
+                    if (netting) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(p.accent)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text("联网找菜中", color = p.faint, fontSize = 11.sp)
+                        }
                     }
                     Text("${shown.size} 道", color = p.faint, fontSize = 11.sp)
                 }

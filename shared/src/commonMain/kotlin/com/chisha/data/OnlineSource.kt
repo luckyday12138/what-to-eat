@@ -1,9 +1,11 @@
 package com.chisha.data
 
 import com.chisha.core.PlatformStore
+import com.chisha.core.chLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -11,6 +13,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
+import kotlin.time.TimeSource
 
 /** 一条网络菜谱 */
 @Serializable
@@ -112,11 +115,13 @@ object OnlineSource {
     /** 点一次换菜，最多为找图等这么久；超时先出菜，图后台继续补 */
     private const val PHOTO_BUDGET = 900L
 
-    /** batch() 首屏最多为「补货」等这么久，到点就先用池里现有的 */
-    private const val WARM_BUDGET = 1_600L
+    /** batch() 首屏最多为「补货」等这么久，到点就先用池里现有的。
+     *  池子通常都被 prefetch 热过了，这里只兜「一道都没有」的极端情况，所以给得很短。 */
+    private const val WARM_BUDGET = 500L
 
-    /** batch() 首屏最多为「取图」等这么久，剩下的图后台补 */
-    private const val PHOTO_WAIT = 700L
+    /** batch() 首屏最多为「取图」等这么久，剩下的图后台补。
+     *  菜名先上屏比等图重要 —— 图晚一两秒补进来，用户几乎察觉不到。 */
+    private const val PHOTO_WAIT = 120L
 
     /** 池子空时「换一道」最多等网络这么久，超时就用本地/缓存兜底 */
     private const val TAKE_BUDGET = 4_000L
@@ -167,6 +172,8 @@ object OnlineSource {
     private val pool: MutableList<NetMeal> = mutableListOf()
     /** 补货单飞标志：同一时刻只允许一路在拉网络 */
     private var refilling = false
+    /** 首次预热单飞标志：弱网下请求要跑好几秒，绝不能因为界面超时就把它掐掉 */
+    private var warming = false
     /** 抓图单飞标志 */
     private var prefetching = false
 
@@ -241,7 +248,7 @@ object OnlineSource {
     }
 
     /** 进页面先预热，让「换一道」不用等。times 控制最多拉几个关键词（每个词一页 20 道） */
-    suspend fun warm(times: Int = 8) = withContext(Dispatchers.IO) {
+    suspend fun warm(times: Int = 8, slot: Slot? = null) = withContext(Dispatchers.IO) {
         ensureCacheLoaded()
         // 看还能推出多少道，而不是池子总条数（池里可能全是刚推过的）
         val usable = { synchronized(pool) { pool.count { isNew(it.name) } } }
@@ -250,9 +257,9 @@ object OnlineSource {
         val used = HashSet<String>()
         repeat(times) {
             if (usable() >= POOL_TARGET) return@withContext
-            var kw = nextKeyword()
+            var kw = nextKeyword(slot)
             var guard = 0
-            while (kw in used && guard++ < 8) kw = nextKeyword()
+            while (kw in used && guard++ < 8) kw = nextKeyword(slot)
             used.add(kw)
             val result = SourceHub.fetch(kw)
             noteSource(result)
@@ -269,15 +276,31 @@ object OnlineSource {
     /** 给首页「推荐」模式取一批：一次拿走 n 道并记为已展示，和在线灵感不撞菜。
      *  slot 不为空时优先取适配这个餐段的菜——不然早上会给你推火锅。 */
     suspend fun batch(n: Int, slot: Slot? = null): List<NetMeal> = withContext(Dispatchers.IO) {
+        val t0 = TimeSource.Monotonic.markNow()
         ensureCacheLoaded()
         val total = synchronized(pool) { pool.size }
         val fresh = synchronized(pool) { pool.count { isNew(it.name) } }
-        // 只有池子真的没货时才值得让首屏等一等（限时 2.2s，源被限流时一次 fetch 要 4~9 秒）
+        // 只有池子真的没货时才让首屏等一等。
+        // 关键：不能用 withTimeoutOrNull 掐死 warm —— 超时会连同已经发出去的握手一起取消，
+        // 而手机弱网下第一次请求要好几秒，于是每次都超时、永远拿不到菜，看着就是「网络推荐一直加载」。
+        // 改成后台单飞去拉，界面这边只轮询一小会儿，拉到就立刻取走。
         if (total < n) {
-            withTimeoutOrNull(WARM_BUDGET) { runCatching { warmOnce(6) } }
+            ensureWarming(slot)
+            val mark = TimeSource.Monotonic.markNow()
+            // 等的不是「池里有多少条」，而是「这个餐段能凑出几道」——
+            // 否则池子被一堆面食（全判成早餐）灌满就提前收工，晚餐只剩一两条，盘子上就孤零零一道菜
+            val need = maxOf(3, n / 2)
+            while (mark.elapsedNow().inWholeMilliseconds < WARM_BUDGET) {
+                val ready = synchronized(pool) {
+                    if (slot == null) pool.size
+                    else pool.count { isNew(it.name) && slot.name in it.slots }
+                }
+                if (ready >= need) break
+                delay(60)
+            }
         } else if (fresh < PER_BATCH) {
             // 池里有菜但大多是推过的：先给用户用，新菜后台静默补进来
-            bg.launch { runCatching { warmOnce(6) } }
+            bg.launch { runCatching { warmOnce(6, slot) } }
         }
 
         val taken = synchronized(pool) {
@@ -327,7 +350,22 @@ object OnlineSource {
         if (photos.size < names.size) {
             bg.launch { runCatching { DishPhoto.resolveAll(names) } }
         }
-        taken.map { m -> photos[m.name]?.let { m.copy(photo = it) } ?: m }
+        taken.map { m -> photos[m.name]?.let { m.copy(photo = it) } ?: m }.also { out ->
+            chLog(
+                "batch n=$n slot=${slot?.label ?: "不限"} 池=$total 新=$fresh " +
+                    "出=${out.size} 图=${photos.size} 耗时=${t0.elapsedNow().inWholeMilliseconds}ms"
+            )
+        }
+    }
+
+    /**
+     * 池里现成的、这个餐段能用的菜（新推的排前面，推过的垫后）。
+     * 只读不取：用来让「切到网络推荐」这一下立刻就能把真实网络菜摆到盘上，不用先亮本地菜再等网络。
+     */
+    fun spot(slot: Slot?, n: Int = 8): List<NetMeal> = synchronized(pool) {
+        if (pool.isEmpty()) return@synchronized emptyList()
+        val fit = pool.filter { slot == null || slot.name in it.slots }
+        (fit.filter { isNew(it.name) } + fit.filterNot { isNew(it.name) }).take(n)
     }
 
     /** 只看不取：给界面展示「已备好的其他灵感」。
@@ -383,15 +421,42 @@ object OnlineSource {
     }
 
     /** 抢到补货权才真去拉网络，抢不到说明已经有一路在拉了，直接返回现有池 */
-    private suspend fun warmOnce(times: Int) {
+    private suspend fun warmOnce(times: Int, slot: Slot? = null) {
         val mine = synchronized(pool) {
             if (refilling) false else { refilling = true; true }
         }
         if (!mine) return
         try {
-            warm(times)
+            warm(times, slot)
         } finally {
             synchronized(pool) { refilling = false }
+        }
+    }
+
+    /**
+     * 进首页就在后台热一下网络池（不管当前是本地模式还是推荐模式）。
+     * 等用户真的切到「网络推荐」，池里已经有菜，不用干等那几秒。
+     */
+    fun prefetch(slot: Slot? = null) = ensureWarming(slot)
+
+    /**
+     * 把「预热」扔到后台跑，且全程只跑一路。
+     * 界面层可能只等一小会儿就走人，但这里不许被打断 —— 半路取消掉一个已经发出去的请求，
+     * 下次还得重头握手，手机弱网下就会一直「加载中」。
+     */
+    private fun ensureWarming(slot: Slot?) {
+        synchronized(pool) {
+            if (warming) return
+            warming = true
+        }
+        bg.launch {
+            try {
+                warmOnce(6, slot)
+            } catch (_: Throwable) {
+                // 拉不到就先让别人看本地菜
+            } finally {
+                synchronized(pool) { warming = false }
+            }
         }
     }
 
@@ -584,8 +649,17 @@ object OnlineSource {
         return familyOf(a) == familyOf(b)
     }
 
-    /** 具体词 / 宽泛词 / 现场拼的做法+食材，三路混着喂，才不会一直在同一批菜里打转 */
-    private fun nextKeyword(): String {
+    /** 具体词 / 宽泛词 / 现场拼的做法+食材，三路混着喂，才不会一直在同一批菜里打转。
+     *  带了餐段时先照顾这个餐段 —— 否则给晚餐拉回一池子面食（全被判成早餐），盘上就没菜可放了。 */
+    private fun nextKeyword(slot: Slot? = null): String {
+        if (slot != null && Random.nextInt(100) < 70) {
+            val bank = when (slot) {
+                Slot.BREAKFAST -> breakfastWords
+                Slot.LUNCH, Slot.DINNER -> mainWords
+                Slot.MIDNIGHT -> nightWords
+            }
+            return bank[Random.nextInt(bank.size)]
+        }
         return when (Random.nextInt(100)) {
             in 0..34 -> specific[Random.nextInt(specific.size)]
             in 35..64 -> broad[Random.nextInt(broad.size)]
@@ -593,6 +667,26 @@ object OnlineSource {
             else -> methods[Random.nextInt(methods.size)] + comboTargets[Random.nextInt(comboTargets.size)]
         }
     }
+
+    /** 正餐用的词：必须是能当一顿饭的菜，不掺粥、包子、米粉这类主食点心 */
+    private val mainWords = listOf(
+        "红烧肉", "排骨", "鸡肉", "牛肉", "鲈鱼", "豆腐", "土豆", "茄子", "白菜", "虾",
+        "羊肉", "鸭肉", "蘑菇", "番茄", "冬瓜", "莲藕", "豆角", "花菜", "南瓜", "山药",
+        "海带", "辣椒", "黄瓜", "玉米", "菠菜", "苦瓜", "芋头", "木耳", "酸菜鱼", "回锅肉",
+        "糖醋里脊", "可乐鸡翅", "番茄鸡蛋", "蒜苗", "豆芽", "丝瓜", "口蘑", "芹菜", "韭菜",
+        "洋葱", "平菇", "金针菇", "粉丝", "炒饭", "猪蹄", "鸡翅", "牛腩", "肥肠", "带鱼",
+        "鱿鱼", "扇贝", "花甲", "腊肉", "火腿",
+    )
+
+    private val breakfastWords = listOf(
+        "粥", "面条", "包子", "馒头", "饺子", "馄饨", "豆浆", "油条", "鸡蛋羹", "米线",
+        "米粉", "煎饼", "烧麦", "汤圆", "花卷", "三明治", "燕麦", "豆腐脑",
+    )
+
+    private val nightWords = listOf(
+        "烧烤", "火锅", "小龙虾", "麻辣烫", "炸鸡", "卤味", "烤鱼", "串", "毛豆", "花生",
+        "麻辣香锅", "锅贴", "酸辣粉",
+    )
 
     private fun ensureCacheLoaded() {
         if (loadedCache) return

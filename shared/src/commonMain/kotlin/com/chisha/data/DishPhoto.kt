@@ -1,6 +1,7 @@
 package com.chisha.data
 
 import com.chisha.core.PlatformStore
+import com.chisha.core.chLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -130,10 +131,13 @@ object DishPhoto {
 
     /** 一次给多道菜补图（并发 3，别把接口打毛） */
     suspend fun resolveAll(names: List<String>): Map<String, String> = coroutineScope {
+        val t0 = kotlin.time.TimeSource.Monotonic.markNow()
         val todo = names.map { it.trim() }.distinct().take(12)
-        todo.chunked(3).flatMap { chunk ->
+        val res = todo.chunked(3).flatMap { chunk ->
             chunk.map { n -> async { n to resolve(n) } }.awaitAll()
         }.mapNotNull { (n, u) -> u?.let { n to it } }.toMap()
+        chLog("  取图 ${res.size}/${todo.size} 批=${(todo.size + 2) / 3} 耗时=${t0.elapsedNow().inWholeMilliseconds}ms")
+        res
     }
 
     /** 后台把本地菜库里还没有照片的菜补齐 */
