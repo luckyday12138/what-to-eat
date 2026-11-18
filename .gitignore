@@ -1,0 +1,17 @@
+# 构建产物
+build/
+*/build/
+.gradle/
+.kotlin/
+local.properties
+
+# 桌面端调试截图与日志
+_shots/
+_tools/run_log.txt
+
+# 原始大图（各 3MB 级，已压成 0.68MB 进了 composeResources）
+_assets_raw/
+
+# 安装包走 GitHub Release，不进版本库
+*.apk
+*.zip
