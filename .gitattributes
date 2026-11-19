@@ -1,0 +1,2 @@
+# 源码归档（git archive）里不带安装包，安装包走 Releases 附件
+*.apk export-ignore
