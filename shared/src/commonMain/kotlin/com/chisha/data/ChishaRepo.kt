@@ -83,6 +83,8 @@ class ChishaRepo private constructor() {
         spicy: Int,
         weight: Float,
         note: String,
+        ingredients: List<String> = emptyList(),
+        steps: List<String> = emptyList(),
     ): Dish {
         val id = "u_" + PlatformStore.nowMillis().toString(36) + Random.nextInt(1000, 9999)
         val dish = Dish(
@@ -98,6 +100,8 @@ class ChishaRepo private constructor() {
             weight = weight,
             origin = Origin.USER,
             note = note,
+            ingredients = ingredients,
+            steps = steps,
         )
         upsert(dish)
         return dish

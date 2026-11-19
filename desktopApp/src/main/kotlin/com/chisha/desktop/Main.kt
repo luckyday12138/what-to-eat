@@ -51,6 +51,8 @@ fun main(args: Array<String>) {
     val section = argValue(args, "--section")?.toIntOrNull() ?: 0
     val demoRecipe = args.contains("--demo")
     val demoResult = args.contains("--result")
+    val demoEditor = args.joinToString(" ").contains("--editor")
+    val demoEditorName = argValue(args, "--editor").orEmpty()
 
     application {
         Window(
@@ -59,7 +61,14 @@ fun main(args: Array<String>) {
             icon = painterResource(Res.drawable.ic_launcher),
             state = rememberWindowState(width = 400.dp, height = 840.dp),
         ) {
-            App(initialTab = tab, initialSection = section, demoRecipe = demoRecipe, demoResult = demoResult)
+            App(
+                initialTab = tab,
+                initialSection = section,
+                demoRecipe = demoRecipe,
+                demoResult = demoResult,
+                demoEditor = demoEditor,
+                demoEditorName = demoEditorName,
+            )
         }
     }
 }

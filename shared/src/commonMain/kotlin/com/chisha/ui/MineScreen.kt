@@ -317,7 +317,7 @@ fun MineScreen() {
 
         Spacer(Modifier.height(26.dp))
         Text(
-            "今天吃什么 · 1.0.0  ·  Kotlin Multiplatform\nAndroid / iOS / 桌面 / Web 同一套代码",
+            "今天吃什么 · 1.2  ·  Kotlin Multiplatform\nAndroid / iOS / 桌面 / Web 同一套代码",
             color = p.faint,
             fontSize = 11.sp,
             lineHeight = 17.sp,

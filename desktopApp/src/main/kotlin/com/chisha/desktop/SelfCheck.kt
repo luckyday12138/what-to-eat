@@ -1,6 +1,7 @@
 package com.chisha.desktop
 
 import com.chisha.data.ChishaRepo
+import com.chisha.data.DishAuto
 import com.chisha.data.MealZh
 import com.chisha.data.NetMeal
 import com.chisha.data.OnlineSource
@@ -274,5 +275,15 @@ fun runSelfCheck() {
     }.onFailure { println("[SKIP] 撤销检查异常：${it.message}") }
 
     println()
+    println("自动补全（只给菜名，其他全推）：")
+    listOf(
+        "红烧肉", "番茄鸡蛋面", "皮蛋瘦肉粥", "剁椒鱼头", "白灼虾", "蒜蓉粉丝蒸娃娃菜",
+        "寿司拼盘", "可乐鸡翅", "羊肉串", "麻婆豆腐", "三文鱼刺身", "清蒸鲈鱼",
+        "宫保鸡丁", "鱼香肉丝", "回锅肉", "水煮牛肉",
+    ).forEach { nm ->
+        val d = DishAuto.draft(nm)
+        println("  $nm → ${DishAuto.summary(d)} | 食材=${d.ingredients.joinToString("、")} | 图类=${d.imageKey} | 做法${d.steps.size}步")
+    }
+
     if (failed == 0) println("SELF-CHECK OK：全部通过") else println("SELF-CHECK FAILED：$failed 项未通过")
 }

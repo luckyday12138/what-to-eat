@@ -56,6 +56,8 @@ fun App(
     initialSection: Int = 0,
     demoRecipe: Boolean = false,
     demoResult: Boolean = false,
+    demoEditor: Boolean = false,
+    demoEditorName: String = "",
     warmPhotos: Boolean = true,
 ) {
     SetupNetworkImages()
@@ -97,7 +99,11 @@ fun App(
                             initialSection = initialSection,
                             onOpenRecipe = { recipe = it },
                         )
-                        2 -> LibraryScreen(onOpenRecipe = { recipe = it })
+                        2 -> LibraryScreen(
+                            onOpenRecipe = { recipe = it },
+                            startCreating = demoEditor,
+                            startName = demoEditorName,
+                        )
                         3 -> MineScreen()
                         else -> TodayScreen(
                             onOpenRecipe = { recipe = it },

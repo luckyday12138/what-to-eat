@@ -140,6 +140,68 @@ object PriceTag {
         "鸭肉", "烤鸭", "酱鸭", "老鸭", "鸭腿", "鸭掌",
     )
 
+    /** 泛字兜底：「炒肉」「炖鱼」这种没写具体主料的，按最常见的那一个算 */
+    private val GENERIC = listOf(
+        "羊" to "羊肉", "牛" to "牛肉", "猪" to "猪肉", "鸡" to "鸡肉",
+        "鸭" to "鸭肉", "鱼" to "草鱼", "虾" to "虾", "蟹" to "蟹",
+        "蛋" to "鸡蛋", "豆腐" to "豆腐", "菜" to "青菜", "面" to "面条",
+        "米" to "米饭", "粥" to "米饭",
+        // 「红烧肉」「回锅肉」只认出一个肉字，按猪肉算总比清单空着强
+        "肉" to "猪肉",
+    )
+
+    /** 只当调料用的词：出现在菜名里不代表要买它，别算进食材清单 */
+    private val CONDIMENT_NAMES = listOf(
+        "剁椒", "泡椒", "豆瓣", "腐乳", "榨菜", "咸菜", "酸菜", "雪菜", "泡菜", "酸笋",
+        "花椒", "干辣椒", "辣椒粉", "辣椒油", "豆豉", "咖喱", "沙茶", "芝麻酱", "花生酱",
+    )
+
+    /** 「肉串」「肉片」这类泛称：已经认出具体肉类时就不再重复算一笔 */
+    private val GENERIC_MEAT = listOf("肉串", "肉片", "肉丝", "肉末", "肉块", "肉馅", "丸子")
+
+    /**
+     * 从菜名里认出主料，拼成食材清单（「猪肉 200克」这种写法，和源站数据同一种格式）。
+     * 用户只填菜名时，价格与菜谱都靠它打底；实在认不出来就返回空，让价格退回按菜名估。
+     */
+    fun guessIngredients(name: String): List<String> {
+        var cleaned = name
+        for (w in FAKE_WORDS) cleaned = cleaned.replace(w, "")
+        if (cleaned.isBlank()) cleaned = name
+        // 长词优先：命中「牛肉片」之后就不再算「牛肉」「肉片」
+        val hits = UNIT.keys.asSequence()
+            .filter { cleaned.contains(it) }
+            // 注意方向：是「这个词本身属于调料」，不是「调料表里有词包含它」——
+            // 反着写会把「番茄」被「番茄酱」连坐掉，番茄鸡蛋面就只剩鸡蛋了
+            .filterNot { k -> k in CONDIMENT_NAMES || SEASONINGS.any { it == k || k.contains(it) } }
+            .sortedWith(compareByDescending<String> { it.length }.thenByDescending { score(it) })
+            .toList()
+        val picked = mutableListOf<String>()
+        for (k in hits) {
+            if (picked.any { it.contains(k) }) continue
+            // 「羊肉串」已经认出羊肉，别再补一条「肉串」
+            if (k in GENERIC_MEAT && picked.any { p -> p.isNotEmpty() && p.first() in MEAT_HEAD }) continue
+            picked += k
+            if (picked.size >= 3) break
+        }
+        if (picked.isEmpty()) {
+            // 泛称一个都认不出来时，按名字里最宽的字眼给一样主料，别让清单空着
+            val generic = GENERIC.firstOrNull { cleaned.contains(it.first) }
+            if (generic != null) picked += generic.second
+            else if (cleaned.contains("肉")) picked += "猪肉"
+        }
+        // 「肉丝」「肉片」按猪肉算：真正具体的肉（羊肉、鸡肉…）早就被认出来了，剩下的泛称只能当猪肉
+        return picked.map { k ->
+            val ing = if (k in GENERIC_MEAT) "猪肉" else k
+            "$ing ${gramOf(ing)}克"
+        }.distinct()
+    }
+
+    private fun gramOf(ing: String): Int = when {
+        ing in PER_PIECE -> pieceGram(ing).toInt()
+        ing in listOf("米", "米饭", "面", "面条", "面粉", "米线", "米粉", "河粉", "粉丝") -> 150
+        else -> 200
+    }
+
     /** 1/2/3 档。菜名给一个基准，食材金额偏离两档以上时往菜名靠一档，挡住源站串位的模板食材 */
     fun level(name: String, ingredients: List<String> = emptyList()): Int {
         // 只要能解析出食材清单，价格就完全由采购成本决定，菜名不再参与任何校正

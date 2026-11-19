@@ -94,6 +94,21 @@ fun artPalette(key: String?): List<Color> = when (key) {
 }
 
 /**
+ * 菜品图地址：网络图和用户自己选的本地图都要能加载。
+ * 自定义图存的是 `file://…`；早期数据里可能是裸路径，这里一并兜住。
+ */
+private fun dishPicSource(imageUri: String?): String? {
+    val raw = imageUri?.trim().orEmpty()
+    return when {
+        raw.isBlank() -> null
+        raw.startsWith("http", ignoreCase = true) -> raw
+        raw.startsWith("file:", ignoreCase = true) -> raw
+        raw.startsWith("/") -> "file://" + raw
+        else -> null
+    }
+}
+
+/**
  * 菜品视觉块：优先内置图包，缺图时用程序化渐变 + 光斑兜底。
  * showName 打开时在底部压一层渐变压暗并叠菜名，保证任何底色都可读。
  */
@@ -106,7 +121,7 @@ fun DishArt(
     scrim: Boolean = true,
 ) {
     val res = builtinRes(dish.imageKey)
-    val remote = dish.imageUri?.takeIf { it.startsWith("http", ignoreCase = true) }
+    val remote = dishPicSource(dish.imageUri)
     val measurer = rememberTextMeasurer()
     val shape = RoundedCornerShape(corner)
 
@@ -179,7 +194,7 @@ private fun drawDishLabel(name: String, measurer: TextMeasurer, scope: DrawScope
 @Composable
 fun DishGlyph(dish: Dish, modifier: Modifier = Modifier, corner: Dp = 12.dp) {
     val res = builtinRes(dish.imageKey)
-    val remote = dish.imageUri?.takeIf { it.startsWith("http", ignoreCase = true) }
+    val remote = dishPicSource(dish.imageUri)
     val shape = RoundedCornerShape(corner)
     Box(modifier = modifier.clip(shape)) {
         if (remote != null) {
